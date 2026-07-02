@@ -1,0 +1,8 @@
+node_modules/
+queue_db.json
+queue.db
+.env
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store

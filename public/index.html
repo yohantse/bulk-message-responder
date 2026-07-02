@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Auto-Responder Queue Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="logo-pulse"></div>
+        <h1>Bulk Auto-Responder <span class="badge badge-accent">Production Queue</span></h1>
+      </div>
+      <div class="status-indicator">
+        <span class="status-dot green" id="connectionStatusDot"></span>
+        <span id="connectionStatusText">Connecting to pipeline...</span>
+      </div>
+    </header>
+
+    <!-- Dashboard Grid Layout -->
+    <div class="dashboard-grid">
+      <!-- Left column: Settings and Ingest Simulation -->
+      <aside class="sidebar">
+        <!-- AI Settings Card -->
+        <section class="card glass">
+          <div class="card-header">
+            <h3>⚙️ Pipeline Settings</h3>
+          </div>
+          <div class="card-body">
+            <form id="settingsForm">
+              <div class="form-group">
+                <label for="apiProvider">AI Provider</label>
+                <select id="apiProvider" class="form-control">
+                  <option value="mock">✨ Mock AI Simulator (No Key Required)</option>
+                  <option value="gemini">♊ Google Gemini 2.5 Flash</option>
+                  <option value="groq">⚡ Groq (Llama 3.1 8B Instant)</option>
+                </select>
+              </div>
+
+              <div class="form-group key-group hidden" id="geminiKeyGroup">
+                <label for="geminiKey">Gemini API Key</label>
+                <input type="password" id="geminiKey" class="form-control" placeholder="AIzaSy...">
+              </div>
+
+              <div class="form-group key-group hidden" id="groqKeyGroup">
+                <label for="groqKey">Groq API Key</label>
+                <input type="password" id="groqKey" class="form-control" placeholder="gsk_...">
+              </div>
+
+              <div class="form-group">
+                <label for="rpmLimit">Worker Rate Limit: <span id="rpmVal" class="text-accent">20</span> RPM</label>
+                <div class="slider-container">
+                  <input type="range" id="rpmLimit" min="5" max="120" step="5" value="20" class="slider">
+                </div>
+                <small class="help-text">Controls delay between worker loops to prevent 429 errors.</small>
+              </div>
+
+              <button type="submit" class="btn btn-primary btn-block">Save Configuration</button>
+            </form>
+          </div>
+        </section>
+
+        <!-- Simulation Center -->
+        <section class="card glass">
+          <div class="card-header">
+            <h3>🚀 Ingest Simulation Center</h3>
+          </div>
+          <div class="card-body">
+            <div class="bulk-buttons">
+              <button class="btn btn-outline-accent btn-campaign" data-count="10">⚡ Burst 10 Replies</button>
+              <button class="btn btn-outline-accent btn-campaign" data-count="50">⚡ Burst 50 Replies</button>
+              <button class="btn btn-outline-accent btn-campaign" data-count="200">💥 Burst 200 Replies</button>
+            </div>
+            
+            <div class="divider"><span>OR SEND INDIVIDUAL WEBHOOK</span></div>
+
+            <form id="singleWebhookForm">
+              <div class="form-group">
+                <label for="phoneInput">Customer Phone</label>
+                <input type="text" id="phoneInput" class="form-control" placeholder="+1 (555) 019-2834" required>
+              </div>
+              <div class="form-group">
+                <label for="messageInput">Incoming Message</label>
+                <textarea id="messageInput" class="form-control" placeholder="Type customer reply here..." rows="3" required></textarea>
+              </div>
+              <div class="btn-group">
+                <button type="submit" class="btn btn-accent btn-block">Trigger Ingest Webhook</button>
+                <button type="button" id="clearQueueBtn" class="btn btn-danger">Clear Database</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </aside>
+
+      <!-- Right column: Stats and Queue Stream -->
+      <main class="main-content">
+        <!-- Stats Cards Row -->
+        <section class="stats-row">
+          <div class="stat-card glass">
+            <div class="stat-icon queued">⏳</div>
+            <div class="stat-details">
+              <span class="stat-label">Queue Backlog</span>
+              <h2 id="statQueued">0</h2>
+              <span class="stat-subtext">Waiting for worker</span>
+            </div>
+          </div>
+          <div class="stat-card glass">
+            <div class="stat-icon processing">⚙️</div>
+            <div class="stat-details">
+              <span class="stat-label">Current RPM</span>
+              <h2 id="statCurrentRpm">0</h2>
+              <span class="stat-subtext">Rate limit: <span id="statRpmLimit">20</span>/min</span>
+            </div>
+          </div>
+          <div class="stat-card glass">
+            <div class="stat-icon completed">✅</div>
+            <div class="stat-details">
+              <span class="stat-label">Processed</span>
+              <h2 id="statCompleted">0</h2>
+              <span class="stat-subtext">Replies structured</span>
+            </div>
+          </div>
+          <div class="stat-card glass">
+            <div class="stat-icon failed">❌</div>
+            <div class="stat-details">
+              <span class="stat-label">Failed Tasks</span>
+              <h2 id="statFailed">0</h2>
+              <span class="stat-subtext">429 rate limit / API errors</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Throttled Worker Status Bar -->
+        <section class="worker-bar-card glass">
+          <div class="worker-info">
+            <span class="worker-status-title">Pipeline Worker Engine Status:</span>
+            <span id="workerStatusBadge" class="badge badge-inactive">Idle</span>
+          </div>
+          <div class="progress-bar-container">
+            <div id="workerProgressBar" class="progress-bar" style="width: 0%;"></div>
+          </div>
+          <span id="workerTimerText" class="worker-timer">Ready for incoming payloads</span>
+        </section>
+
+        <!-- Log Details Tab & Container -->
+        <section class="card glass table-card">
+          <div class="card-header flex-header">
+            <h3>📨 Message Stream Log</h3>
+            <div class="filter-tabs">
+              <button class="tab-btn active" data-filter="all">All</button>
+              <button class="tab-btn" data-filter="queued">Queued</button>
+              <button class="tab-btn" data-filter="completed">Completed</button>
+              <button class="tab-btn" data-filter="failed">Failed</button>
+            </div>
+          </div>
+          <div class="table-container">
+            <table class="message-table">
+              <thead>
+                <tr>
+                  <th>Phone / Timestamp</th>
+                  <th width="30%">Message Text</th>
+                  <th>Intent</th>
+                  <th>Urgency</th>
+                  <th>Extracted Data</th>
+                  <th>Response Draft</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="messageLogsBody">
+                <tr>
+                  <td colspan="7" class="text-center text-muted">No messages in pipeline database. Trigger a webhook simulation to start.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+</body>
+</html>
