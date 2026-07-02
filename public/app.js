@@ -12,6 +12,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const rpmLimit = document.getElementById('rpmLimit');
   const rpmVal = document.getElementById('rpmVal');
   
+  const telegramToken = document.getElementById('telegramToken');
+  const webhookUrl = document.getElementById('webhookUrl');
+  
   const singleWebhookForm = document.getElementById('singleWebhookForm');
   const phoneInput = document.getElementById('phoneInput');
   const messageInput = document.getElementById('messageInput');
@@ -74,6 +77,9 @@ document.addEventListener('DOMContentLoaded', () => {
       geminiKey.value = settings.gemini_key || '';
       groqKey.value = settings.groq_key || '';
       
+      telegramToken.value = settings.telegram_token || '';
+      webhookUrl.value = settings.webhook_url || '';
+      
       toggleKeyGroups(apiProvider.value);
     } catch (err) {
       console.error('Error fetching settings:', err);
@@ -87,7 +93,9 @@ document.addEventListener('DOMContentLoaded', () => {
       api_provider: apiProvider.value,
       rpm_limit: parseInt(rpmLimit.value),
       gemini_key: geminiKey.value,
-      groq_key: groqKey.value
+      groq_key: groqKey.value,
+      telegram_token: telegramToken.value,
+      webhook_url: webhookUrl.value
     };
 
     try {
@@ -267,9 +275,14 @@ document.addEventListener('DOMContentLoaded', () => {
       statusMarkup = `<span class="status-col failed">❌ Failed</span>`;
     }
 
+    // Determine platform badge markup
+    const platformMarkup = msg.platform === 'telegram'
+      ? `<span class="badge" style="background: rgba(0, 136, 204, 0.12); color: #0088cc; border: 1px solid rgba(0, 136, 204, 0.25); padding: 1px 4px; font-size: 0.65rem; margin-right: 4px; border-radius: 4px;">TG</span>`
+      : `<span class="badge" style="background: rgba(167, 139, 250, 0.12); color: var(--accent-purple); border: 1px solid rgba(167, 139, 250, 0.25); padding: 1px 4px; font-size: 0.65rem; margin-right: 4px; border-radius: 4px;">SIM</span>`;
+
     tr.innerHTML = `
       <td>
-        <span class="phone-col">${msg.phone}</span>
+        <span class="phone-col">${platformMarkup}${msg.phone}</span>
         <span class="time-col">${timeStr}</span>
       </td>
       <td style="font-weight: 500;">${msg.message}</td>

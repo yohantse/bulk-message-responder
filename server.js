@@ -26,7 +26,9 @@ let dbData = {
     rpm_limit: '20',
     api_provider: 'mock',
     gemini_key: '',
-    groq_key: ''
+    groq_key: '',
+    telegram_token: '',
+    webhook_url: ''
   }
 };
 
@@ -43,6 +45,14 @@ async function initDb() {
       if (dbData.settings.api_provider === undefined) dbData.settings.api_provider = 'mock';
       if (dbData.settings.gemini_key === undefined) dbData.settings.gemini_key = '';
       if (dbData.settings.groq_key === undefined) dbData.settings.groq_key = '';
+      if (dbData.settings.telegram_token === undefined) dbData.settings.telegram_token = '';
+      if (dbData.settings.webhook_url === undefined) dbData.settings.webhook_url = '';
+
+      // Normalize existing messages
+      dbData.messages.forEach(m => {
+        if (m.platform === undefined) m.platform = 'simulator';
+        if (m.chat_id === undefined) m.chat_id = null;
+      });
     } else {
       await saveDb();
     }
@@ -114,14 +124,26 @@ app.get('/api/settings', (req, res) => {
 });
 
 app.post('/api/settings', async (req, res) => {
-  const { rpm_limit, api_provider, gemini_key, groq_key } = req.body;
+  const { rpm_limit, api_provider, gemini_key, groq_key, telegram_token, webhook_url } = req.body;
   try {
     if (rpm_limit !== undefined) dbData.settings.rpm_limit = rpm_limit.toString();
     if (api_provider !== undefined) dbData.settings.api_provider = api_provider;
     if (gemini_key !== undefined) dbData.settings.gemini_key = gemini_key;
     if (groq_key !== undefined) dbData.settings.groq_key = groq_key;
     
+    const prevToken = dbData.settings.telegram_token;
+    const prevWebhookUrl = dbData.settings.webhook_url;
+    
+    if (telegram_token !== undefined) dbData.settings.telegram_token = telegram_token;
+    if (webhook_url !== undefined) dbData.settings.webhook_url = webhook_url;
+    
     await saveDb();
+
+    // Re-register webhook if token or URL changed
+    if (dbData.settings.telegram_token && dbData.settings.webhook_url && 
+       (dbData.settings.telegram_token !== prevToken || dbData.settings.webhook_url !== prevWebhookUrl)) {
+      registerTelegramWebhook(dbData.settings.telegram_token, dbData.settings.webhook_url);
+    }
 
     // Trigger the worker to apply speed changes or process messages
     triggerWorker();
@@ -132,7 +154,7 @@ app.post('/api/settings', async (req, res) => {
   }
 });
 
-// Webhook endpoint (Ingests message to queue immediately and disconnects)
+// Webhook endpoint (Ingests simulator message to queue immediately)
 app.post('/api/webhook', async (req, res) => {
   const { phone, message } = req.body;
   if (!phone || !message) {
@@ -148,6 +170,8 @@ app.post('/api/webhook', async (req, res) => {
       phone,
       message,
       status: 'queued',
+      platform: 'simulator',
+      chat_id: null,
       intent: null,
       urgency: null,
       language: null,
@@ -165,13 +189,62 @@ app.post('/api/webhook', async (req, res) => {
     broadcast('stats', getStats());
     broadcast('message_queued', newMsg);
 
-    // Respond within milliseconds to avoid webhook timeouts
     res.status(200).json({ status: 'queued', messageId: msgId });
 
-    // Trigger the background processing worker asynchronously
+    // Trigger processing
     triggerWorker();
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Telegram Webhook Endpoint
+app.post('/api/telegram-webhook', async (req, res) => {
+  const { message } = req.body;
+  
+  if (!message || !message.text) {
+    // Ignore edits, media, inline queries or non-text events, but acknowledge with 200 OK
+    return res.status(200).send('OK');
+  }
+
+  const chatId = message.chat.id.toString();
+  const senderName = `${message.from.first_name || ''} ${message.from.last_name || ''}`.trim() || `User_${chatId.slice(-4)}`;
+  const messageText = message.text;
+  
+  const msgId = `tg_${message.message_id}_${Math.random().toString(36).substr(2, 5)}`;
+  const createdAt = new Date().toISOString();
+
+  try {
+    const newMsg = {
+      id: msgId,
+      phone: senderName, // Display sender name in place of phone in logs
+      message: messageText,
+      status: 'queued',
+      platform: 'telegram',
+      chat_id: chatId,
+      intent: null,
+      urgency: null,
+      language: null,
+      extracted_entities: null,
+      draft_response: null,
+      error: null,
+      created_at: createdAt,
+      processed_at: null
+    };
+
+    dbData.messages.push(newMsg);
+    await saveDb();
+
+    broadcast('stats', getStats());
+    broadcast('message_queued', newMsg);
+
+    // Respond immediately to Telegram to prevent timeouts
+    res.status(200).send('OK');
+
+    triggerWorker();
+  } catch (err) {
+    console.error('Error queueing Telegram webhook payload:', err);
+    res.status(500).send('Error');
   }
 });
 
@@ -200,7 +273,6 @@ app.post('/api/simulate-bulk', async (req, res) => {
         t = templates[Math.floor(Math.random() * templates.length)];
       }
 
-      // Add phone variety
       const phone = t.phone.slice(0, -3) + String(Math.floor(100 + Math.random() * 900));
       const msgId = 'msg_' + Math.random().toString(36).substr(2, 9) + '_' + i;
       
@@ -209,6 +281,8 @@ app.post('/api/simulate-bulk', async (req, res) => {
         phone,
         message: t.message,
         status: 'queued',
+        platform: 'simulator',
+        chat_id: null,
         intent: null,
         urgency: null,
         language: null,
@@ -237,7 +311,6 @@ app.post('/api/simulate-bulk', async (req, res) => {
 // Get Messages
 app.get('/api/messages', (req, res) => {
   const limit = parseInt(req.query.limit) || 100;
-  // Sort messages descending by created_at
   const sorted = [...dbData.messages]
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
     .slice(0, limit);
@@ -257,6 +330,48 @@ app.post('/api/clear', async (req, res) => {
   }
 });
 
+// --- TELEGRAM WEBHOOK REGISTRATION HELPERS ---
+
+async function registerTelegramWebhook(token, webhookUrl) {
+  const cleanUrl = webhookUrl.endsWith('/') ? webhookUrl.slice(0, -1) : webhookUrl;
+  const registerUrl = `https://api.telegram.org/bot${token}/setWebhook?url=${cleanUrl}/api/telegram-webhook`;
+  
+  console.log(`Registering Telegram webhook endpoint at: ${registerUrl}`);
+  try {
+    const response = await fetch(registerUrl);
+    const data = await response.json();
+    if (data.ok) {
+      console.log('Telegram webhook registered successfully!');
+    } else {
+      console.error('Failed to register Telegram webhook:', data.description);
+    }
+  } catch (err) {
+    console.error('Error connecting to Telegram registration API:', err.message);
+  }
+}
+
+async function sendTelegramMessage(token, chatId, text) {
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text
+      })
+    });
+    const data = await response.json();
+    if (!data.ok) {
+      console.error(`Failed to send Telegram message to chat ID ${chatId}:`, data.description);
+    } else {
+      console.log(`Message dispatched to Telegram user in chat ${chatId}`);
+    }
+  } catch (err) {
+    console.error(`Network error sending message to Telegram user:`, err.message);
+  }
+}
+
 // --- WORKER PIPELINE ---
 
 let workerRunning = false;
@@ -273,19 +388,17 @@ async function runWorker() {
   workerRunning = true;
 
   while (true) {
-    // 1. Get next queued message (oldest is first in queue)
     const msg = dbData.messages.find(m => m.status === 'queued');
     if (!msg) {
       break;
     }
 
-    // 2. Set status to processing
+    // Set to processing
     msg.status = 'processing';
     await saveDb();
     broadcast('message_updated', { id: msg.id, status: 'processing' });
     broadcast('stats', getStats());
 
-    // 3. Get configurations
     const provider = dbData.settings.api_provider || 'mock';
     const rpmLimit = parseInt(dbData.settings.rpm_limit) || 20;
 
@@ -294,7 +407,7 @@ async function runWorker() {
     try {
       result = await callAI(provider, msg.message, dbData.settings);
       
-      // Update entry details
+      // Update details
       msg.status = 'completed';
       msg.intent = result.customer_intent;
       msg.urgency = result.urgency_score;
@@ -314,6 +427,16 @@ async function runWorker() {
         draft_response: msg.draft_response
       });
 
+      // Dispatch Telegram response if platform is Telegram and bot token is available
+      if (msg.platform === 'telegram' && msg.chat_id && msg.draft_response) {
+        const token = dbData.settings.telegram_token;
+        if (token) {
+          await sendTelegramMessage(token, msg.chat_id, msg.draft_response);
+        } else {
+          console.warn('Cannot dispatch reply on Telegram: Bot Token setting is empty');
+        }
+      }
+
     } catch (err) {
       console.error(`Error processing message ${msg.id}:`, err.message);
       msg.status = 'failed';
@@ -325,7 +448,7 @@ async function runWorker() {
 
     broadcast('stats', getStats());
 
-    // 4. Rate limiting delay calculation
+    // Rate limiting delay
     const intervalMs = Math.ceil(60000 / rpmLimit);
     const elapsedMs = Date.now() - startTime;
     const remainingDelay = Math.max(0, intervalMs - elapsedMs);
@@ -487,6 +610,12 @@ Customer Message: "${messageText}"`;
 initDb().then(() => {
   app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
+    
+    // Auto register webhook on startup if settings are already populated
+    if (dbData.settings.telegram_token && dbData.settings.webhook_url) {
+      registerTelegramWebhook(dbData.settings.telegram_token, dbData.settings.webhook_url);
+    }
+    
     triggerWorker();
   });
 });
